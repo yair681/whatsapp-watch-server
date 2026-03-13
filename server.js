@@ -5,7 +5,7 @@ const qrcode = require('qrcode');
 const app = express();
 app.use(express.json());
 
-let qrCodeData = null;
+let qrRaw = null;
 let isReady = false;
 let messages = [];
 let client = null;
@@ -28,16 +28,16 @@ function startClient() {
         }
     });
 
-    client.on('qr', async (qr) => {
+    client.on('qr', (qr) => {
         console.log('QR Code received');
         isReady = false;
-        qrCodeData = await qrcode.toDataURL(qr);
+        qrRaw = qr;
     });
 
     client.on('ready', () => {
         console.log('WhatsApp Ready!');
         isReady = true;
-        qrCodeData = null;
+        qrRaw = null;
     });
 
     client.on('message', async (msg) => {
@@ -53,44 +53,38 @@ function startClient() {
                 minute: '2-digit'
             })
         });
-        // שמור רק 20 הודעות אחרונות
         if (messages.length > 20) messages = messages.slice(0, 20);
     });
 
     client.on('disconnected', () => {
         console.log('Disconnected, restarting...');
         isReady = false;
-        qrCodeData = null;
+        qrRaw = null;
         setTimeout(startClient, 3000);
     });
 
     client.initialize();
 }
 
-// --- נקודות קצה ---
-
-// סטטוס
 app.get('/status', (req, res) => {
-    res.json({ ready: isReady, hasQr: !!qrCodeData });
+    res.json({ ready: isReady, hasQr: !!qrRaw });
 });
 
-// QR Code
-app.get('/qr', (req, res) => {
-    if (qrCodeData) {
-        res.json({ qr: qrCodeData });
-    } else if (isReady) {
-        res.json({ ready: true });
+// מייצר QR טרי בכל פעם
+app.get('/qr', async (req, res) => {
+    if (isReady) return res.json({ ready: true });
+    if (qrRaw) {
+        const freshQr = await qrcode.toDataURL(qrRaw);
+        res.json({ qr: freshQr });
     } else {
         res.json({ waiting: true });
     }
 });
 
-// הודעות אחרונות
 app.get('/messages', (req, res) => {
     res.json({ messages });
 });
 
-// שליחת תגובה מהירה
 app.post('/reply', async (req, res) => {
     const { number, text } = req.body;
     if (!isReady) return res.json({ error: 'not ready' });
@@ -102,15 +96,14 @@ app.post('/reply', async (req, res) => {
     }
 });
 
-// דף בית
 app.get('/', (req, res) => {
     res.send(`
         <html><body style="background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:40px">
-        <h2>🐍 WhatsApp Watch Server</h2>
-        <p>Status: ${isReady ? '✅ מחובר' : qrCodeData ? '📱 ממתין לסריקה' : '⏳ טוען...'}</p>
-        <p><a href="/qr" style="color:#25D366">QR API</a> | 
-           <a href="/messages" style="color:#25D366">Messages API</a> |
-           <a href="/status" style="color:#25D366">Status API</a></p>
+        <h2>WhatsApp Watch Server</h2>
+        <p>Status: ${isReady ? '✅ מחובר' : qrRaw ? '📱 ממתין לסריקה' : '⏳ טוען...'}</p>
+        <p><a href="/qr" style="color:#25D366">QR</a> | 
+           <a href="/messages" style="color:#25D366">הודעות</a> |
+           <a href="/status" style="color:#25D366">סטטוס</a></p>
         </body></html>
     `);
 });
