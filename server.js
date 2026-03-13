@@ -14,7 +14,7 @@ function startClient() {
     client = new Client({
         authStrategy: new LocalAuth(),
         puppeteer: {
-            executablePath: '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.66/chrome-linux64/chrome',
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || require('puppeteer').executablePath(),
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
