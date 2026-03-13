@@ -1,6 +1,8 @@
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
+const pino = require('pino');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
@@ -8,94 +10,89 @@ app.use(express.json());
 let qrRaw = null;
 let isReady = false;
 let messages = [];
-let client = null;
+let sock = null;
 let status = 'starting';
 
-function startClient() {
-    console.log('[DEBUG] Starting WhatsApp client...');
+const AUTH_DIR = '/tmp/baileys_auth';
+if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+async function startClient() {
+    console.log('[DEBUG] Starting Baileys client...');
     status = 'starting';
 
-    client = new Client({
-        authStrategy: new LocalAuth({
-            dataPath: '/tmp/.wwebjs_auth'
-        }),
-        puppeteer: {
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || require('puppeteer').executablePath(),
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu'
-            ]
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+    sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        browser: ['WhatsApp Watch', 'Chrome', '1.0.0']
+    });
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('[DEBUG] QR received!');
+            qrRaw = qr;
+            isReady = false;
+            status = 'waiting_scan';
+        }
+
+        if (connection === 'open') {
+            console.log('[DEBUG] Connected!');
+            isReady = true;
+            qrRaw = null;
+            status = 'ready';
+        }
+
+        if (connection === 'close') {
+            const code = lastDisconnect?.error?.output?.statusCode;
+            console.log('[DEBUG] Disconnected, code:', code);
+            isReady = false;
+            status = 'disconnected';
+
+            const shouldReconnect = code !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                console.log('[DEBUG] Reconnecting...');
+                setTimeout(startClient, 3000);
+            } else {
+                console.log('[DEBUG] Logged out, clearing auth...');
+                fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                fs.mkdirSync(AUTH_DIR, { recursive: true });
+                setTimeout(startClient, 3000);
+            }
         }
     });
 
-    client.on('loading_screen', (percent, message) => {
-        console.log(`[DEBUG] Loading: ${percent}% - ${message}`);
-        status = `loading ${percent}%`;
-    });
+    sock.ev.on('creds.update', saveCreds);
 
-    client.on('authenticated', () => {
-        console.log('[DEBUG] Authenticated!');
-        status = 'authenticated';
-    });
+    sock.ev.on('messages.upsert', async ({ messages: msgs, type }) => {
+        if (type !== 'notify') return;
+        for (const msg of msgs) {
+            if (!msg.message || msg.key.fromMe) continue;
+            const from = msg.key.remoteJid;
+            const number = from.replace('@s.whatsapp.net', '').replace('@g.us', '');
+            const name = msg.pushName || number;
+            const body =
+                msg.message?.conversation ||
+                msg.message?.extendedTextMessage?.text ||
+                msg.message?.imageMessage?.caption ||
+                '📎 קובץ';
 
-    client.on('auth_failure', (msg) => {
-        console.log('[DEBUG] Auth failure:', msg);
-        status = 'auth_failed';
-        qrRaw = null;
-    });
-
-    client.on('qr', (qr) => {
-        console.log('[DEBUG] QR Code received, length:', qr.length);
-        isReady = false;
-        qrRaw = qr;
-        status = 'waiting_scan';
-    });
-
-    client.on('ready', () => {
-        console.log('[DEBUG] WhatsApp Ready!');
-        isReady = true;
-        qrRaw = null;
-        status = 'ready';
-    });
-
-    client.on('message', async (msg) => {
-        console.log('[DEBUG] Message from:', msg.from);
-        try {
-            const contact = await msg.getContact();
-            const name = contact.pushname || contact.number;
+            console.log('[DEBUG] Message from:', name);
             messages.unshift({
-                id: msg.id._serialized,
+                id: msg.key.id,
                 from: name,
-                number: contact.number,
-                body: msg.body,
-                time: new Date(msg.timestamp * 1000).toLocaleTimeString('he-IL', {
+                number,
+                body,
+                time: new Date(msg.messageTimestamp * 1000).toLocaleTimeString('he-IL', {
                     hour: '2-digit',
                     minute: '2-digit'
                 })
             });
             if (messages.length > 20) messages = messages.slice(0, 20);
-        } catch (e) {
-            console.log('[DEBUG] Message error:', e.message);
         }
-    });
-
-    client.on('disconnected', (reason) => {
-        console.log('[DEBUG] Disconnected:', reason);
-        isReady = false;
-        qrRaw = null;
-        status = 'disconnected';
-        setTimeout(startClient, 5000);
-    });
-
-    client.initialize().catch(err => {
-        console.log('[DEBUG] Initialize error:', err.message);
-        status = 'error: ' + err.message;
-        setTimeout(startClient, 5000);
     });
 }
 
@@ -119,9 +116,9 @@ app.get('/messages', (req, res) => {
 
 app.post('/reply', async (req, res) => {
     const { number, text } = req.body;
-    if (!isReady) return res.json({ error: 'not ready' });
+    if (!isReady || !sock) return res.json({ error: 'not ready' });
     try {
-        await client.sendMessage(`${number}@c.us`, text);
+        await sock.sendMessage(`${number}@s.whatsapp.net`, { text });
         res.json({ ok: true });
     } catch (e) {
         res.json({ error: e.message });
