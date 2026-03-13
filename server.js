@@ -28,7 +28,6 @@ function startClient() {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process',
                 '--disable-gpu'
             ]
         }
@@ -100,16 +99,10 @@ function startClient() {
     });
 }
 
-// סטטוס מפורט
 app.get('/status', (req, res) => {
-    res.json({
-        ready: isReady,
-        hasQr: !!qrRaw,
-        status: status
-    });
+    res.json({ ready: isReady, hasQr: !!qrRaw, status });
 });
 
-// QR טרי בכל בקשה
 app.get('/qr', async (req, res) => {
     if (isReady) return res.json({ ready: true });
     if (qrRaw) {
@@ -120,12 +113,10 @@ app.get('/qr', async (req, res) => {
     }
 });
 
-// הודעות
 app.get('/messages', (req, res) => {
     res.json({ messages });
 });
 
-// תגובה מהירה
 app.post('/reply', async (req, res) => {
     const { number, text } = req.body;
     if (!isReady) return res.json({ error: 'not ready' });
@@ -137,7 +128,6 @@ app.post('/reply', async (req, res) => {
     }
 });
 
-// דף בית
 app.get('/', (req, res) => {
     res.send(`
         <html><body style="background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:40px">
