@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
@@ -26,7 +26,10 @@ async function startClient() {
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        browser: ['WhatsApp Watch', 'Chrome', '1.0.0']
+        browser: Browsers.macOS('Desktop'),
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000,
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -50,18 +53,14 @@ async function startClient() {
             const code = lastDisconnect?.error?.output?.statusCode;
             console.log('[DEBUG] Disconnected, code:', code);
             isReady = false;
-            status = 'disconnected';
+            status = 'disconnected: ' + code;
 
-            const shouldReconnect = code !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                console.log('[DEBUG] Reconnecting...');
-                setTimeout(startClient, 3000);
-            } else {
+            if (code === DisconnectReason.loggedOut) {
                 console.log('[DEBUG] Logged out, clearing auth...');
                 fs.rmSync(AUTH_DIR, { recursive: true, force: true });
                 fs.mkdirSync(AUTH_DIR, { recursive: true });
-                setTimeout(startClient, 3000);
             }
+            setTimeout(startClient, 5000);
         }
     });
 
